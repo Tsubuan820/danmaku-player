@@ -176,20 +176,42 @@
     reader.readAsText(f, 'UTF-8');
   });
 
+  // --- Zoom チャット .txt パーサー ---
+  // 形式: HH:MM:SS[TAB]Name:[TAB]Message
+  // 複数行メッセージ対応、Reacted to / URL のみ除外
   function parseChat(text) {
     const lines = text.split(/\r?\n/);
     const result = [];
-    lines.forEach(line => {
-      if (!line.trim()) return;
-      const m = line.match(/^(\d{1,2}):(\d{2}):(\d{2})\s+From\s+.+?\s+[Tt]o\s+.+?:\s*(.*)/i);
+    let current = null;
+
+    for (const line of lines) {
+      // タイムスタンプで始まる行 = 新しいメッセージ
+      const m = line.match(/^(\d{1,2}):(\d{2}):(\d{2})\t(.+?):\t(.*)/);
       if (m) {
+        // 前のメッセージを保存
+        if (current) pushIfValid(result, current);
         const sec = parseInt(m[1]) * 3600 + parseInt(m[2]) * 60 + parseInt(m[3]);
-        const msg = m[4].trim();
-        if (msg) result.push({ time: sec, msg, fired: false });
+        current = { time: sec, msg: m[5].trim(), fired: false };
+      } else if (current && line.trim()) {
+        // 続きの行（複数行メッセージ）
+        current.msg += ' ' + line.trim();
       }
-    });
+    }
+    // 最後のメッセージ
+    if (current) pushIfValid(result, current);
+
     result.sort((a, b) => a.time - b.time);
     return result;
+  }
+
+  function pushIfValid(arr, item) {
+    const msg = item.msg;
+    if (!msg) return;
+    // 「Reacted to ...」を除外
+    if (/^Reacted to /i.test(msg)) return;
+    // URL のみのメッセージを除外
+    if (/^https?:\/\/\S+$/i.test(msg)) return;
+    arr.push(item);
   }
 
   // --- 同期ループ ---
@@ -250,7 +272,6 @@
     el.className = 'cmnt';
     const fontSize = parseInt(sizeRange.value);
     const h = overlay.offsetHeight;
-    // ランダムな縦位置（画面上部 90% の範囲にばらける）
     const maxTop = h * 0.9 - fontSize;
     const top = Math.random() * Math.max(maxTop, 0);
     el.style.fontSize = fontSize + 'px';
