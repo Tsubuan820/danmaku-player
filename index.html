@@ -218,7 +218,9 @@
   video.addEventListener('play', startLoop);
   video.addEventListener('pause', pauseAll);
   video.addEventListener('seeked', () => {
-    comments.forEach(c => c.fired = false);
+    // シーク先より前のコメントは「発射済み」扱いにして表示しない
+    const now = video.currentTime + parseInt(offsetRange.value);
+    comments.forEach(c => { c.fired = c.time <= now; });
     overlay.innerHTML = '';
   });
 
@@ -256,7 +258,8 @@
       if (c.time <= now) {
         c.fired = true;
         fired++;
-        spawnComment(c);
+        // 1秒以内のコメントだけ実際に表示（シーク時の一斉発射を防止）
+        if (now - c.time < 1) spawnComment(c);
       }
     });
     statusEl.textContent = fired + ' / ' + comments.length;
