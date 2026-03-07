@@ -205,12 +205,20 @@
   }
 
   function pushIfValid(arr, item) {
-    const msg = item.msg;
+    let msg = item.msg;
     if (!msg) return;
     // 「Reacted to ...」を除外
     if (/^Reacted to /i.test(msg)) return;
     // URL のみのメッセージを除外
     if (/^https?:\/\/\S+$/i.test(msg)) return;
+    // 「”...” に対して 〜 で対応しました」を除外
+    if (/に対して.+で対応しました$/.test(msg)) return;
+    // 「add 👍」系を除外
+    if (/^add\s/i.test(msg)) return;
+    // 「Replying to ...」の返信ヘッダーを除去して本文だけ残す
+    msg = msg.replace(/^Replying to ".*?"\s*/i, '').trim();
+    if (!msg) return;
+    item.msg = msg;
     arr.push(item);
   }
 
