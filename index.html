@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Zoom チャット横断幕</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@900&display=swap');
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Noto Sans JP', 'Hiragino Kaku Gothic ProN', 'Yu Gothic', sans-serif;
+    background: #000;
+    color: #fff;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+  #player-wrap {
+    position: relative;
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    background: #000;
+  }
+  #video {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    display: block;
+  }
+  #overlay {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    pointer-events: none;
+  }
+  .cmnt {
+    position: absolute;
+    white-space: nowrap;
+    font-weight: 900;
+    color: #fff;
+    text-shadow:
+      2px 2px 0 #000, -2px -2px 0 #000,
+      2px -2px 0 #000, -2px 2px 0 #000,
+      2px 0 0 #000, -2px 0 0 #000,
+      0 2px 0 #000, 0 -2px 0 #000;
+    will-change: transform;
+    pointer-events: none;
+    line-height: 1.2;
+  }
+  #placeholder {
+    color: #555;
+    font-size: 1rem;
+    text-align: center;
+    padding: 40px;
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: 8px;
+  }
+  #placeholder span { font-size: 2.5rem; }
+  #controls {
+    background: #181818;
+    padding: 10px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    flex-shrink: 0;
+    border-top: 1px solid #333;
+  }
+  .ctrl-row {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  .btn-file {
+    background: #2a2a2a; color: #ccc; cursor: pointer;
+    padding: 5px 12px; border-radius: 5px;
+    font-size: 0.78rem; font-weight: 600;
+    border: 1px solid #444;
+    display: inline-flex; align-items: center; gap: 4px;
+    transition: background 0.15s;
+  }
+  .btn-file:hover { background: #3a3a3a; }
+  .btn-file input { display: none; }
+  label.ctrl-label {
+    font-size: 0.75rem; color: #888;
+    display: flex; align-items: center; gap: 4px;
+  }
+  input[type=range] { width: 70px; accent-color: #888; }
+  #status { font-size: 0.7rem; color: #555; margin-left: auto; }
+  .val { font-size: 0.7rem; color: #999; min-width: 28px; text-align: center; }
+</style>
+</head>
+<body>
+
+<div id="player-wrap">
+  <div id="placeholder"><span>🎬</span>動画ファイルとチャット .txt を読み込んでください</div>
+  <video id="video" style="display:none" controls></video>
+  <div id="overlay"></div>
+</div>
+
+<div id="controls">
+  <div class="ctrl-row">
+    <label class="btn-file">🎬 動画
+      <input type="file" id="videoInput" accept="video/*">
+    </label>
+    <label class="btn-file">💬 チャット .txt
+      <input type="file" id="chatInput" accept=".txt">
+    </label>
+    <label class="ctrl-label">文字サイズ
+      <input type="range" id="sizeRange" min="16" max="48" value="28">
+      <span class="val" id="size-val">28</span>
+    </label>
+    <label class="ctrl-label">速さ
+      <input type="range" id="speedRange" min="4" max="16" value="8">
+      <span class="val" id="speed-val">8</span>
+    </label>
+    <label class="ctrl-label">オフセット(秒)
+      <input type="range" id="offsetRange" min="-60" max="60" value="0">
+      <span class="val" id="offset-val">0</span>
+    </label>
+    <span id="status"></span>
+  </div>
+</div>
+
+<script>
+  const video = document.getElementById('video');
+  const overlay = document.getElementById('overlay');
+  const placeholder = document.getElementById('placeholder');
+  const videoInput = document.getElementById('videoInput');
+  const chatInput = document.getElementById('chatInput');
+  const sizeRange = document.getElementById('sizeRange');
+  const speedRange = document.getElementById('speedRange');
+  const offsetRange = document.getElementById('offsetRange');
+  const sizeVal = document.getElementById('size-val');
+  const speedVal = document.getElementById('speed-val');
+  const offsetVal = document.getElementById('offset-val');
+  const statusEl = document.getElementById('status');
+
+  let comments = [];
+  let rafId = null;
+
+  sizeRange.addEventListener('input', () => sizeVal.textContent = sizeRange.value);
+  speedRange.addEventListener('input', () => speedVal.textContent = speedRange.value);
+  offsetRange.addEventListener('input', () => {
+    const v = parseInt(offsetRange.value);
+    offsetVal.textContent = (v >= 0 ? '+' : '') + v;
+  });
+
+  // --- 動画読み込み ---
+  videoInput.addEventListener('change', e => {
+    const f = e.target.files[0];
+    if (!f) return;
+    video.src = URL.createObjectURL(f);
+    video.style.display = 'block';
+    placeholder.style.display = 'none';
+    video.load();
+  });
+
+  // --- チャット読み込み ---
+  chatInput.addEventListener('change', e => {
+    const f = e.target.files[0];
+    if (!f) return;
+    const reader = new FileReader();
+    reader.onload = ev => {
+      comments = parseChat(ev.target.result);
+      statusEl.textContent = comments.length + ' コメント読込済';
+    };
+    reader.readAsText(f, 'UTF-8');
+  });
+
+  function parseChat(text) {
+    const lines = text.split(/\r?\n/);
+    const result = [];
+    lines.forEach(line => {
+      if (!line.trim()) return;
+      const m = line.match(/^(\d{1,2}):(\d{2}):(\d{2})\s+From\s+.+?\s+[Tt]o\s+.+?:\s*(.*)/i);
+      if (m) {
+        const sec = parseInt(m[1]) * 3600 + parseInt(m[2]) * 60 + parseInt(m[3]);
+        const msg = m[4].trim();
+        if (msg) result.push({ time: sec, msg, fired: false });
+      }
+    });
+    result.sort((a, b) => a.time - b.time);
+    return result;
+  }
+
+  // --- 同期ループ ---
+  video.addEventListener('play', startLoop);
+  video.addEventListener('pause', pauseAll);
+  video.addEventListener('seeked', () => {
+    comments.forEach(c => c.fired = false);
+    overlay.innerHTML = '';
+  });
+
+  function startLoop() {
+    // 一時停止中のコメントを再開
+    overlay.querySelectorAll('.cmnt.paused').forEach(el => {
+      el.classList.remove('paused');
+      const left = parseFloat(el.dataset.pausedX);
+      const w = el.offsetWidth;
+      const remaining = (left + w) / (overlay.offsetWidth + w);
+      const dur = remaining * getDuration();
+      el.style.transition = 'transform ' + Math.max(dur, 0.3) + 's linear';
+      el.style.transform = 'translateX(' + (-(overlay.offsetWidth + w)) + 'px)';
+    });
+    if (!rafId) tick();
+  }
+
+  function pauseAll() {
+    if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
+    overlay.querySelectorAll('.cmnt:not(.paused)').forEach(el => {
+      const mx = new DOMMatrix(getComputedStyle(el).transform);
+      el.style.transition = 'none';
+      el.style.transform = 'translateX(' + mx.m41 + 'px)';
+      el.classList.add('paused');
+      el.dataset.pausedX = mx.m41;
+    });
+  }
+
+  function tick() {
+    if (video.paused || video.ended) { rafId = null; return; }
+    const now = video.currentTime + parseInt(offsetRange.value);
+    let fired = 0;
+    comments.forEach(c => {
+      if (c.fired) { fired++; return; }
+      if (c.time <= now) {
+        c.fired = true;
+        fired++;
+        spawnComment(c);
+      }
+    });
+    statusEl.textContent = fired + ' / ' + comments.length;
+    rafId = requestAnimationFrame(tick);
+  }
+
+  function getDuration() {
+    return 18 - parseInt(speedRange.value);
+  }
+
+  function spawnComment(item) {
+    const el = document.createElement('div');
+    el.className = 'cmnt';
+    const fontSize = parseInt(sizeRange.value);
+    const h = overlay.offsetHeight;
+    // ランダムな縦位置（画面上部 90% の範囲にばらける）
+    const maxTop = h * 0.9 - fontSize;
+    const top = Math.random() * Math.max(maxTop, 0);
+    el.style.fontSize = fontSize + 'px';
+    el.style.top = top + 'px';
+    el.style.left = '100%';
+    el.textContent = item.msg;
+    overlay.appendChild(el);
+
+    const w = el.offsetWidth;
+    const totalDist = overlay.offsetWidth + w;
+    const dur = getDuration();
+    el.style.transition = 'transform ' + dur + 's linear';
+    requestAnimationFrame(() => {
+      el.style.transform = 'translateX(-' + totalDist + 'px)';
+    });
+    el.addEventListener('transitionend', () => el.remove());
+  }
+</script>
+</body>
+</html>
