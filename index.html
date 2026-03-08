@@ -23,40 +23,20 @@
     justify-content: center;
     overflow: hidden;
     background: #000;
+    cursor: pointer;
   }
-  #video {
-    width: 100%;
-    height: 100%;
-    object-fit: contain;
-    display: block;
-  }
-  #overlay {
-    position: absolute;
-    inset: 0;
-    overflow: hidden;
-    pointer-events: none;
-  }
-  .cmnt {
-    position: absolute;
-    white-space: nowrap;
-    font-weight: 900;
-    color: #fff;
-    text-shadow:
-      2px 2px 0 #000, -2px -2px 0 #000,
-      2px -2px 0 #000, -2px 2px 0 #000,
-      2px 0 0 #000, -2px 0 0 #000,
-      0 2px 0 #000, 0 -2px 0 #000;
-    will-change: transform;
-    pointer-events: none;
-    line-height: 1.2;
+  video { display: none; }
+  #canvas {
+    max-width: 100%;
+    max-height: 100%;
+    display: none;
+    background: #000;
   }
   #placeholder {
     color: #555;
     font-size: 1rem;
     text-align: center;
     padding: 40px;
-    position: absolute;
-    inset: 0;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -89,6 +69,28 @@
   }
   .btn-file:hover { background: #3a3a3a; }
   .btn-file input { display: none; }
+  .btn-action {
+    background: #d44; color: #fff; cursor: pointer;
+    padding: 5px 14px; border-radius: 5px;
+    font-size: 0.78rem; font-weight: 700;
+    border: none;
+    display: inline-flex; align-items: center; gap: 4px;
+    transition: background 0.15s;
+  }
+  .btn-action:hover { background: #e55; }
+  .btn-action:disabled { background: #444; color: #666; cursor: not-allowed; }
+  .btn-action.recording { background: #a22; animation: pulse 1s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.6} }
+  .btn-play {
+    background: #2a2a2a; color: #ccc; cursor: pointer;
+    padding: 5px 10px; border-radius: 5px;
+    font-size: 0.85rem; font-weight: 600;
+    border: 1px solid #444;
+    min-width: 32px; text-align: center;
+  }
+  .btn-play:hover { background: #3a3a3a; }
+  #seekBar { flex: 1; min-width: 80px; accent-color: #888; }
+  #timeDisplay { font-size: 0.7rem; color: #888; min-width: 90px; text-align: center; }
   label.ctrl-label {
     font-size: 0.75rem; color: #888;
     display: flex; align-items: center; gap: 4px;
@@ -96,17 +98,30 @@
   input[type=range] { width: 70px; accent-color: #888; }
   #status { font-size: 0.7rem; color: #555; margin-left: auto; }
   .val { font-size: 0.7rem; color: #999; min-width: 28px; text-align: center; }
+  #progress-wrap {
+    width: 100%; height: 3px; background: #333; display: none;
+  }
+  #progress-fill {
+    height: 100%; background: #d44; width: 0%;
+    transition: width 0.3s linear;
+  }
 </style>
 </head>
 <body>
 
 <div id="player-wrap">
   <div id="placeholder"><span>🎬</span>動画ファイルとチャット .txt を読み込んでください</div>
-  <video id="video" style="display:none" controls></video>
-  <div id="overlay"></div>
+  <video id="video"></video>
+  <canvas id="canvas"></canvas>
 </div>
 
 <div id="controls">
+  <div id="progress-wrap"><div id="progress-fill"></div></div>
+  <div class="ctrl-row">
+    <button id="playBtn" class="btn-play" disabled>▶</button>
+    <input type="range" id="seekBar" min="0" max="1000" value="0" disabled>
+    <span id="timeDisplay">0:00 / 0:00</span>
+  </div>
   <div class="ctrl-row">
     <label class="btn-file">🎬 動画
       <input type="file" id="videoInput" accept="video/*">
@@ -114,6 +129,7 @@
     <label class="btn-file">💬 チャット .txt
       <input type="file" id="chatInput" accept=".txt">
     </label>
+    <button id="saveBtn" class="btn-action" disabled>⏺ 録画保存</button>
     <label class="ctrl-label">文字サイズ
       <input type="range" id="sizeRange" min="16" max="48" value="28">
       <span class="val" id="size-val">28</span>
@@ -131,175 +147,327 @@
 </div>
 
 <script>
-  const video = document.getElementById('video');
-  const overlay = document.getElementById('overlay');
-  const placeholder = document.getElementById('placeholder');
-  const videoInput = document.getElementById('videoInput');
-  const chatInput = document.getElementById('chatInput');
-  const sizeRange = document.getElementById('sizeRange');
-  const speedRange = document.getElementById('speedRange');
-  const offsetRange = document.getElementById('offsetRange');
-  const sizeVal = document.getElementById('size-val');
-  const speedVal = document.getElementById('speed-val');
-  const offsetVal = document.getElementById('offset-val');
-  const statusEl = document.getElementById('status');
+const video = document.getElementById('video');
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const placeholder = document.getElementById('placeholder');
+const playerWrap = document.getElementById('player-wrap');
+const videoInput = document.getElementById('videoInput');
+const chatInput = document.getElementById('chatInput');
+const sizeRange = document.getElementById('sizeRange');
+const speedRange = document.getElementById('speedRange');
+const offsetRange = document.getElementById('offsetRange');
+const sizeVal = document.getElementById('size-val');
+const speedVal = document.getElementById('speed-val');
+const offsetVal = document.getElementById('offset-val');
+const statusEl = document.getElementById('status');
+const saveBtn = document.getElementById('saveBtn');
+const playBtn = document.getElementById('playBtn');
+const seekBar = document.getElementById('seekBar');
+const timeDisplay = document.getElementById('timeDisplay');
+const progressWrap = document.getElementById('progress-wrap');
+const progressFill = document.getElementById('progress-fill');
 
-  let comments = [];
-  let rafId = null;
+let comments = [];
+let activeComments = [];
+let rafId = null;
+let isRecording = false;
+let mediaRecorder = null;
+let recordedChunks = [];
+let videoReady = false;
+let chatReady = false;
+let lastTime = 0;
+let audioCtx, audioSource, audioDest;
 
-  sizeRange.addEventListener('input', () => sizeVal.textContent = sizeRange.value);
-  speedRange.addEventListener('input', () => speedVal.textContent = speedRange.value);
-  offsetRange.addEventListener('input', () => {
-    const v = parseInt(offsetRange.value);
-    offsetVal.textContent = (v >= 0 ? '+' : '') + v;
-  });
+// --- スライダー ---
+sizeRange.addEventListener('input', () => sizeVal.textContent = sizeRange.value);
+speedRange.addEventListener('input', () => speedVal.textContent = speedRange.value);
+offsetRange.addEventListener('input', () => {
+  const v = parseInt(offsetRange.value);
+  offsetVal.textContent = (v >= 0 ? '+' : '') + v;
+});
 
-  // --- 動画読み込み ---
-  videoInput.addEventListener('change', e => {
-    const f = e.target.files[0];
-    if (!f) return;
-    video.src = URL.createObjectURL(f);
-    video.style.display = 'block';
+function updateBtns() {
+  saveBtn.disabled = !(videoReady && chatReady) || isRecording;
+  playBtn.disabled = !videoReady;
+  seekBar.disabled = !videoReady;
+}
+
+function fmtTime(s) {
+  const m = Math.floor(s / 60);
+  const sec = Math.floor(s % 60);
+  return m + ':' + String(sec).padStart(2, '0');
+}
+
+// --- 動画読み込み ---
+videoInput.addEventListener('change', e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  video.src = URL.createObjectURL(f);
+  video.load();
+  video.addEventListener('loadedmetadata', () => {
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    canvas.style.display = 'block';
     placeholder.style.display = 'none';
-    video.load();
-  });
+    videoReady = true;
+    // Audio setup（1回だけ）
+    if (!audioCtx) {
+      audioCtx = new AudioContext();
+      audioSource = audioCtx.createMediaElementSource(video);
+      audioDest = audioCtx.createMediaStreamDestination();
+      audioSource.connect(audioDest);
+      audioSource.connect(audioCtx.destination);
+    }
+    updateBtns();
+    timeDisplay.textContent = '0:00 / ' + fmtTime(video.duration);
+    // 最初のフレームを描画
+    video.currentTime = 0;
+    video.addEventListener('seeked', function firstFrame() {
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      video.removeEventListener('seeked', firstFrame);
+    });
+  }, { once: true });
+});
 
-  // --- チャット読み込み ---
-  chatInput.addEventListener('change', e => {
-    const f = e.target.files[0];
-    if (!f) return;
-    const reader = new FileReader();
-    reader.onload = ev => {
-      comments = parseChat(ev.target.result);
-      statusEl.textContent = comments.length + ' コメント読込済';
-    };
-    reader.readAsText(f, 'UTF-8');
-  });
+// --- チャット読み込み ---
+chatInput.addEventListener('change', e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  const reader = new FileReader();
+  reader.onload = ev => {
+    comments = parseChat(ev.target.result);
+    statusEl.textContent = comments.length + ' コメント読込済';
+    chatReady = true;
+    updateBtns();
+  };
+  reader.readAsText(f, 'UTF-8');
+});
 
-  // --- Zoom チャット .txt パーサー ---
-  // 形式: HH:MM:SS[TAB]Name:[TAB]Message
-  // 複数行メッセージ対応、Reacted to / URL のみ除外
-  function parseChat(text) {
-    const lines = text.split(/\r?\n/);
-    const result = [];
-    let current = null;
+// --- Zoom チャット .txt パーサー ---
+function parseChat(text) {
+  const lines = text.split(/\r?\n/);
+  const result = [];
+  let current = null;
+  for (const line of lines) {
+    const m = line.match(/^(\d{1,2}):(\d{2}):(\d{2})\t(.+?):\t(.*)/);
+    if (m) {
+      if (current) pushIfValid(result, current);
+      const sec = parseInt(m[1]) * 3600 + parseInt(m[2]) * 60 + parseInt(m[3]);
+      current = { time: sec, msg: m[5].trim(), fired: false };
+    } else if (current && line.trim()) {
+      current.msg += ' ' + line.trim();
+    }
+  }
+  if (current) pushIfValid(result, current);
+  result.sort((a, b) => a.time - b.time);
+  return result;
+}
 
-    for (const line of lines) {
-      // タイムスタンプで始まる行 = 新しいメッセージ
-      const m = line.match(/^(\d{1,2}):(\d{2}):(\d{2})\t(.+?):\t(.*)/);
-      if (m) {
-        // 前のメッセージを保存
-        if (current) pushIfValid(result, current);
-        const sec = parseInt(m[1]) * 3600 + parseInt(m[2]) * 60 + parseInt(m[3]);
-        current = { time: sec, msg: m[5].trim(), fired: false };
-      } else if (current && line.trim()) {
-        // 続きの行（複数行メッセージ）
-        current.msg += ' ' + line.trim();
+function pushIfValid(arr, item) {
+  let msg = item.msg;
+  if (!msg) return;
+  if (/^Reacted to /i.test(msg)) return;
+  if (/^https?:\/\/\S+$/i.test(msg)) return;
+  if (/に対して.+で対応しました$/.test(msg)) return;
+  if (/^add\s/i.test(msg)) return;
+  msg = msg.replace(/^Replying to ".*?"\s*/i, '').trim();
+  if (!msg) return;
+  item.msg = msg;
+  arr.push(item);
+}
+
+// --- 再生コントロール ---
+playBtn.addEventListener('click', () => {
+  if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+  if (video.paused) video.play(); else video.pause();
+});
+
+playerWrap.addEventListener('click', e => {
+  if (!videoReady || isRecording) return;
+  if (e.target.closest('#controls')) return;
+  playBtn.click();
+});
+
+video.addEventListener('play', () => {
+  playBtn.textContent = '⏸';
+  startLoop();
+});
+video.addEventListener('pause', () => { playBtn.textContent = '▶'; });
+video.addEventListener('ended', () => {
+  playBtn.textContent = '▶';
+  if (isRecording) stopRecording();
+});
+
+// シーク
+let isSeeking = false;
+seekBar.addEventListener('input', () => {
+  isSeeking = true;
+  const t = (seekBar.value / 1000) * video.duration;
+  video.currentTime = t;
+  timeDisplay.textContent = fmtTime(t) + ' / ' + fmtTime(video.duration);
+});
+seekBar.addEventListener('change', () => { isSeeking = false; });
+
+video.addEventListener('timeupdate', () => {
+  if (!isSeeking && video.duration) {
+    seekBar.value = (video.currentTime / video.duration) * 1000;
+    timeDisplay.textContent = fmtTime(video.currentTime) + ' / ' + fmtTime(video.duration);
+  }
+});
+
+video.addEventListener('seeked', () => {
+  const now = video.currentTime + parseInt(offsetRange.value);
+  comments.forEach(c => { c.fired = c.time <= now; });
+  activeComments = [];
+  lastTime = 0;
+  rafId = requestAnimationFrame(renderFrame);
+});
+
+// --- Canvas 描画 ---
+function getSpeed() {
+  return canvas.width * parseInt(speedRange.value) / 40;
+}
+
+function getFontSize() {
+  const base = parseInt(sizeRange.value);
+  const scale = canvas.height / 600;
+  return Math.max(base * scale, 14);
+}
+
+function startLoop() {
+  lastTime = 0;
+  if (!rafId) rafId = requestAnimationFrame(renderFrame);
+}
+
+function renderFrame(ts) {
+  if (!lastTime) lastTime = ts;
+  const dt = Math.min((ts - lastTime) / 1000, 0.1);
+  lastTime = ts;
+
+  // 動画フレームを Canvas に描画
+  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+  const fontSize = getFontSize();
+  ctx.font = '900 ' + fontSize + 'px "Noto Sans JP", "Hiragino Kaku Gothic ProN", sans-serif';
+  ctx.textBaseline = 'top';
+
+  const speed = getSpeed();
+  const offset = parseInt(offsetRange.value);
+  const now = video.currentTime + offset;
+
+  // コメント発射
+  let firedCount = 0;
+  for (const c of comments) {
+    if (c.fired) { firedCount++; continue; }
+    if (c.time <= now) {
+      c.fired = true;
+      firedCount++;
+      if (now - c.time < 1.5) {
+        const w = ctx.measureText(c.msg).width;
+        const maxTop = canvas.height * 0.85 - fontSize;
+        activeComments.push({
+          msg: c.msg, x: canvas.width,
+          y: Math.random() * Math.max(maxTop, 0), w
+        });
       }
     }
-    // 最後のメッセージ
-    if (current) pushIfValid(result, current);
-
-    result.sort((a, b) => a.time - b.time);
-    return result;
   }
 
-  function pushIfValid(arr, item) {
-    let msg = item.msg;
-    if (!msg) return;
-    // 「Reacted to ...」を除外
-    if (/^Reacted to /i.test(msg)) return;
-    // URL のみのメッセージを除外
-    if (/^https?:\/\/\S+$/i.test(msg)) return;
-    // 「”...” に対して 〜 で対応しました」を除外
-    if (/に対して.+で対応しました$/.test(msg)) return;
-    // 「add 👍」系を除外
-    if (/^add\s/i.test(msg)) return;
-    // 「Replying to ...」の返信ヘッダーを除去して本文だけ残す
-    msg = msg.replace(/^Replying to ".*?"\s*/i, '').trim();
-    if (!msg) return;
-    item.msg = msg;
-    arr.push(item);
+  // コメント移動 & 描画
+  ctx.strokeStyle = '#000';
+  ctx.lineWidth = fontSize * 0.15;
+  ctx.lineJoin = 'round';
+  ctx.fillStyle = '#fff';
+
+  for (let i = activeComments.length - 1; i >= 0; i--) {
+    const ac = activeComments[i];
+    if (!video.paused) ac.x -= speed * dt;
+    if (ac.x + ac.w < 0) { activeComments.splice(i, 1); continue; }
+    ctx.strokeText(ac.msg, ac.x, ac.y);
+    ctx.fillText(ac.msg, ac.x, ac.y);
   }
 
-  // --- 同期ループ ---
-  video.addEventListener('play', startLoop);
-  video.addEventListener('pause', pauseAll);
-  video.addEventListener('seeked', () => {
-    // シーク先より前のコメントは「発射済み」扱いにして表示しない
-    const now = video.currentTime + parseInt(offsetRange.value);
-    comments.forEach(c => { c.fired = c.time <= now; });
-    overlay.innerHTML = '';
+  statusEl.textContent = firedCount + ' / ' + comments.length;
+
+  if (isRecording && video.duration) {
+    progressFill.style.width = (video.currentTime / video.duration * 100) + '%';
+  }
+
+  if (!video.paused && !video.ended) {
+    rafId = requestAnimationFrame(renderFrame);
+  } else {
+    rafId = null;
+  }
+}
+
+// --- 録画保存 ---
+saveBtn.addEventListener('click', () => {
+  if (isRecording) return;
+  startRecording();
+});
+
+function startRecording() {
+  isRecording = true;
+  recordedChunks = [];
+  saveBtn.textContent = '⏺ 録画中…';
+  saveBtn.classList.add('recording');
+  saveBtn.disabled = true;
+  progressWrap.style.display = 'block';
+  progressFill.style.width = '0%';
+
+  // コメントリセット
+  comments.forEach(c => c.fired = false);
+  activeComments = [];
+
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+
+  // Canvas 映像 + 音声ストリーム
+  const canvasStream = canvas.captureStream(30);
+  const audioTrack = audioDest.stream.getAudioTracks()[0];
+  if (audioTrack) canvasStream.addTrack(audioTrack);
+
+  const mime = MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus')
+    ? 'video/webm;codecs=vp9,opus'
+    : 'video/webm';
+
+  mediaRecorder = new MediaRecorder(canvasStream, {
+    mimeType: mime, videoBitsPerSecond: 8000000
   });
 
-  function startLoop() {
-    // 一時停止中のコメントを再開
-    overlay.querySelectorAll('.cmnt.paused').forEach(el => {
-      el.classList.remove('paused');
-      const left = parseFloat(el.dataset.pausedX);
-      const w = el.offsetWidth;
-      const remaining = (left + w) / (overlay.offsetWidth + w);
-      const dur = remaining * getDuration();
-      el.style.transition = 'transform ' + Math.max(dur, 0.3) + 's linear';
-      el.style.transform = 'translateX(' + (-(overlay.offsetWidth + w)) + 'px)';
-    });
-    if (!rafId) tick();
-  }
+  mediaRecorder.ondataavailable = e => {
+    if (e.data.size > 0) recordedChunks.push(e.data);
+  };
 
-  function pauseAll() {
-    if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
-    overlay.querySelectorAll('.cmnt:not(.paused)').forEach(el => {
-      const mx = new DOMMatrix(getComputedStyle(el).transform);
-      el.style.transition = 'none';
-      el.style.transform = 'translateX(' + mx.m41 + 'px)';
-      el.classList.add('paused');
-      el.dataset.pausedX = mx.m41;
-    });
-  }
+  mediaRecorder.onstop = () => {
+    const blob = new Blob(recordedChunks, { type: mime });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'zoom_chat_overlay.webm';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
 
-  function tick() {
-    if (video.paused || video.ended) { rafId = null; return; }
-    const now = video.currentTime + parseInt(offsetRange.value);
-    let fired = 0;
-    comments.forEach(c => {
-      if (c.fired) { fired++; return; }
-      if (c.time <= now) {
-        c.fired = true;
-        fired++;
-        // 1秒以内のコメントだけ実際に表示（シーク時の一斉発射を防止）
-        if (now - c.time < 1) spawnComment(c);
-      }
-    });
-    statusEl.textContent = fired + ' / ' + comments.length;
-    rafId = requestAnimationFrame(tick);
-  }
+    isRecording = false;
+    saveBtn.textContent = '⏺ 録画保存';
+    saveBtn.classList.remove('recording');
+    updateBtns();
+    progressWrap.style.display = 'none';
+    statusEl.textContent = '保存完了！';
+  };
 
-  function getDuration() {
-    return 18 - parseInt(speedRange.value);
-  }
+  mediaRecorder.start(1000);
 
-  function spawnComment(item) {
-    const el = document.createElement('div');
-    el.className = 'cmnt';
-    const fontSize = parseInt(sizeRange.value);
-    const h = overlay.offsetHeight;
-    const maxTop = h * 0.9 - fontSize;
-    const top = Math.random() * Math.max(maxTop, 0);
-    el.style.fontSize = fontSize + 'px';
-    el.style.top = top + 'px';
-    el.style.left = '100%';
-    el.textContent = item.msg;
-    overlay.appendChild(el);
+  // 先頭から再生開始
+  video.currentTime = 0;
+  setTimeout(() => video.play(), 200);
+}
 
-    const w = el.offsetWidth;
-    const totalDist = overlay.offsetWidth + w;
-    const dur = getDuration();
-    el.style.transition = 'transform ' + dur + 's linear';
-    requestAnimationFrame(() => {
-      el.style.transform = 'translateX(-' + totalDist + 'px)';
-    });
-    el.addEventListener('transitionend', () => el.remove());
+function stopRecording() {
+  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+    mediaRecorder.stop();
   }
+}
 </script>
 </body>
 </html>
